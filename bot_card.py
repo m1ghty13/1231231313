@@ -85,6 +85,38 @@ async def init_db():
             )
         """)
         await db.commit()
+        await db.execute("""
+CREATE TABLE IF NOT EXISTS stripe_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    data TEXT,
+    is_sold INTEGER DEFAULT 0
+)
+""")
+
+
+async def add_stripe_account(data: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO stripe_accounts (data) VALUES (?)",
+            (data,)
+        )
+        await db.commit()
+
+async def get_free_stripe_account():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id, data FROM stripe_accounts WHERE is_sold = 0 LIMIT 1"
+        ) as cursor:
+            return await cursor.fetchone()
+
+async def mark_stripe_sold(account_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE stripe_accounts SET is_sold = 1 WHERE id = ?",
+            (account_id,)
+        )
+        await db.commit()
+
 
 async def get_balance(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -131,9 +163,42 @@ async def show_start(message_or_callback, edit: bool = False):
 def admin_menu():
     kb = InlineKeyboardBuilder()
     kb.button(text="💰 Начислить баланс", callback_data="admin_add_balance")
+    kb.button(text="➕ Добавить Stripe", callback_data="admin_add_stripe")
     kb.button(text="⬅️ Назад", callback_data="main_menu")
     kb.adjust(1)
     return kb.as_markup()
+
+
+class AdminStripeState(StatesGroup):
+    waiting_for_data = State()
+
+
+@router.callback_query(lambda c: c.data == "admin_add_stripe")
+async def admin_add_stripe_start(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+
+    await callback.message.edit_text(
+        "💳 Отправь *данные Stripe аккаунта*\n\n"
+        "Пример:\n"
+        "`login:pass | email | recovery | country`",
+        parse_mode="Markdown"
+    )
+    await state.set_state(AdminStripeState.waiting_for_data)
+
+
+@router.message(AdminStripeState.waiting_for_data)
+async def admin_add_stripe_finish(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    await add_stripe_account(message.text)
+
+    await message.answer(
+        "✅ Stripe аккаунт добавлен и готов к продаже",
+        reply_markup=admin_menu()
+    )
+    await state.clear()
 
 
 @router.callback_query(lambda c: c.data == "admin_panel")
@@ -441,54 +506,42 @@ async def wallet_info_handler(callback: types.CallbackQuery):
 @router.callback_query(lambda c: c.data.startswith("buy_wallet_"))
 async def buy_wallet_handler(callback: types.CallbackQuery):
     user_id = callback.from_user.id
-    index = int(callback.data.split("_")[2])
-
-    name = list(e_wallets.keys())[index]
-    data = e_wallets[name]
-    price = data["price"]
-
     balance = await get_balance(user_id)
 
-    if data["stock"] <= 0:
-        await callback.message.edit_text("❌ Товар закончился.")
-        await callback.answer()
-        return
+    price = 10  # Stripe price
 
     if balance < price:
         await callback.message.edit_text(
-            (
-                f"⚠️ *Недостаточно средств!*\n\n"
-                f"💰 Баланс: *{balance}$*\n"
-                f"💵 Цена: *{price}$*"
-            ),
-            parse_mode="Markdown",
+            "⚠️ Недостаточно средств",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="💳 Пополнить баланс", callback_data="topup")],
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"wallet_info_{index+1}")]
+                [InlineKeyboardButton(text="💳 Пополнить", callback_data="topup")]
             ])
         )
-        await callback.answer()
         return
 
-    await update_balance(user_id, -float(price))
-    e_wallets[name]["stock"] -= 1
+    stripe = await get_free_stripe_account()
+    if not stripe:
+        await callback.message.edit_text("❌ Stripe аккаунты закончились")
+        return
 
-    new_balance = await get_balance(user_id)
+    acc_id, acc_data = stripe
+
+    await update_balance(user_id, -price)
+    await mark_stripe_sold(acc_id)
 
     await callback.message.edit_text(
         (
-            f"✅ *Покупка успешна!*\n\n"
-            f"💳 Кошелёк: *Stripe*\n"
-            f"💵 Цена: *{price}$*\n"
-            f"💰 Баланс: *{new_balance}$*\n\n"
-            "Данные будут выданы в ближайшее время."
+            "✅ *Покупка Stripe успешна!*\n\n"
+            "💳 *Данные аккаунта:*\n"
+            f"```{acc_data}```\n\n"
+            "⚠️ Сохрани данные, повторная выдача невозможна."
         ),
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🏠 В меню", callback_data="main_menu")]
         ])
     )
-    await callback.answer()
+
 
 
 # ---------- Категория: ЛК банков ----------
