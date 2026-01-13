@@ -49,11 +49,20 @@ avito_accounts = {
     }
 }
 
+e_wallets = {
+    "💳 Stripe": {
+        "price": 10,
+        "stock": 334
+    }
+}
 
 
-BOT_TOKEN = "8599155215:AAE7umCggsC0chyE5-FjAmeHPzcfi2NqSws"
+
+
+BOT_TOKEN = "8263025244:AAENgxIbsW7NwBYvFsQP8NEPTTf2UOTpT4E"
 CRYPTOBOT_TOKEN = "485714:AAOdLcHdbEjKgkJsPY9AJwzuxUdntgCnJXA"
 crypto = AioCryptoPay(token=CRYPTOBOT_TOKEN, network=Networks.MAIN_NET)
+ADMIN_IDS = [7389358624]
 
 
 user_balances = {}
@@ -96,8 +105,7 @@ async def update_balance(user_id: int, amount: float):
 async def show_start(message_or_callback, edit: bool = False):
     start_text = (
         f"👋 Привет, {message_or_callback.from_user.first_name}!\n\n"
-        "Это магазин готовых верифицированных аккаунтов крипто-бирж и ЛК банков, добро пожаловать!\n\n"
-        "Канал: https://t.me/avitoaccsshop\n"
+        "Это магазин готовых верифицированных аккаунтов крипто-бирж, электронных кошельков и ЛК банков, добро пожаловать!\n\n"
         "Перед покупкой рекомендуем ознакомиться с FAQ."
     )
 
@@ -105,27 +113,117 @@ async def show_start(message_or_callback, edit: bool = False):
         try:
             await message_or_callback.message.edit_text(
                 start_text,
-                reply_markup=main_menu()
+                reply_markup=main_menu(message_or_callback.from_user.id)
             )
         except TelegramBadRequest:
             # если нельзя отредактировать — отправляем новое
             await message_or_callback.message.answer(
                 start_text,
-                reply_markup=main_menu()
+                reply_markup=main_menu(message_or_callback.from_user.id)
             )
     else:
         await message_or_callback.answer(
             start_text,
-            reply_markup=main_menu()
+            reply_markup=main_menu(message_or_callback.from_user.id)
         )
 
 
+def admin_menu():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💰 Начислить баланс", callback_data="admin_add_balance")
+    kb.button(text="⬅️ Назад", callback_data="main_menu")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+@router.callback_query(lambda c: c.data == "admin_panel")
+async def admin_panel_handler(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        "🛠 *Админ-панель*",
+        parse_mode="Markdown",
+        reply_markup=admin_menu()
+    )
+    await callback.answer()
+
+
+class AdminState(StatesGroup):
+    waiting_for_user_id = State()
+    waiting_for_amount = State()
+
+@router.callback_query(lambda c: c.data == "admin_add_balance")
+async def admin_add_balance_start(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        "👤 Введите *ID пользователя*, которому нужно начислить баланс:",
+        parse_mode="Markdown"
+    )
+    await state.set_state(AdminState.waiting_for_user_id)
+    await callback.answer()
+
+@router.message(AdminState.waiting_for_user_id)
+async def admin_get_user_id(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    if not message.text.isdigit():
+        await message.answer("❌ Введите корректный числовой ID.")
+        return
+
+    await state.update_data(target_user_id=int(message.text))
+    await message.answer("💰 Введите сумму в USD для начисления:")
+    await state.set_state(AdminState.waiting_for_amount)
+
+@router.message(AdminState.waiting_for_amount)
+async def admin_add_balance_finish(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    try:
+        amount = float(message.text.replace(",", "."))
+    except ValueError:
+        await message.answer("❌ Введите корректную сумму.")
+        return
+
+    if amount <= 0:
+        await message.answer("❌ Сумма должна быть больше 0.")
+        return
+
+    data = await state.get_data()
+    target_user_id = data["target_user_id"]
+
+    await update_balance(target_user_id, amount)
+    new_balance = await get_balance(target_user_id)
+
+    await message.answer(
+        (
+            f"✅ *Баланс успешно начислен!*\n\n"
+            f"👤 ID пользователя: `{target_user_id}`\n"
+            f"💵 Начислено: *{amount}$*\n"
+            f"💰 Новый баланс: *{new_balance}$*"
+        ),
+        parse_mode="Markdown",
+        reply_markup=admin_menu()
+    )
+
+    await state.clear()
+
 # ---------- Главное меню ----------
-def main_menu():
+def main_menu(user_id: int | None = None):
     kb = InlineKeyboardBuilder()
     kb.button(text="📦 Каталог", callback_data="catalog")
     kb.button(text="ℹ️ Инфо", callback_data="info")
     kb.button(text="👤 Кабинет", callback_data="cabinet")
+
+    if user_id in ADMIN_IDS:
+        kb.button(text="🛠 Админ-панель", callback_data="admin_panel")
+
     kb.adjust(1, 2)
     return kb.as_markup()
 
@@ -142,7 +240,7 @@ async def cmd_start(message: types.Message):
 # ---------- Каталог ----------
 def catalog_menu():
     kb = InlineKeyboardBuilder()
-    kb.button(text="💰 Крипто-биржи", callback_data="crypto_exchanges")
+    kb.button(text="💳 Электронные кошельки", callback_data="e_wallets")
     kb.button(text="🏦 ЛК банков", callback_data="bank_accounts")
     kb.button(text="❤ Авито", callback_data="neo_banks")
     kb.button(text="⬅️ Назад", callback_data="main_menu")
@@ -209,7 +307,7 @@ async def info_handler(callback: types.CallbackQuery):
 async def support_handler(callback: types.CallbackQuery):
     support_text = (
         "🆘 *Поддержка*\n\n"
-        "При возникновении вопросов или проблем — пишите администратору: @x2ndgf\n\n"
+        "При возникновении вопросов или проблем — пишите администратору: @mainframesss\n\n"
         "⚠️ *Но перед этим убедитесь, что вашего вопроса нет в FAQ ⬇️*"
     )
 
@@ -284,13 +382,114 @@ async def back_to_info_handler(callback: types.CallbackQuery):
 
 
 # ---------- Категория: Крипто-биржи ----------
-@router.callback_query(lambda c: c.data == "crypto_exchanges")
-async def crypto_exchanges_handler(callback: types.CallbackQuery):
+@router.callback_query(lambda c: c.data == "e_wallets")
+async def e_wallets_handler(callback: types.CallbackQuery):
+    text = "💳 Электронные кошельки:\n\nВыберите кошелёк:"
+
+    buttons = []
+    for i, name in enumerate(e_wallets.keys(), 1):
+        buttons.append([
+            InlineKeyboardButton(
+                text=name,
+                callback_data=f"wallet_info_{i}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="catalog"),
+        InlineKeyboardButton(text="🏠 В меню", callback_data="main_menu")
+    ])
+
     await callback.message.edit_text(
-        "💰 Крипто-биржи:\n\nСкоро тут будут товары!",
-        reply_markup=catalog_submenu()
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
     )
     await callback.answer()
+
+@router.callback_query(lambda c: c.data.startswith("wallet_info_"))
+async def wallet_info_handler(callback: types.CallbackQuery):
+    index = int(callback.data.split("_")[2]) - 1
+    name = list(e_wallets.keys())[index]
+    data = e_wallets[name]
+
+    price = data["price"]
+    stock = data["stock"]
+
+    text = (
+        f"{name}\n\n"
+        f"💰 Цена: *{price}$*\n"
+        f"📦 В наличии: *{stock} шт.*\n\n"
+        "Готовый аккаунт Stripe.\n"
+        "Вы можете приобрести его прямо сейчас 👇"
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛒 Купить", callback_data=f"buy_wallet_{index}")],
+        [
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="e_wallets"),
+            InlineKeyboardButton(text="🏠 В меню", callback_data="main_menu")
+        ]
+    ])
+
+    await callback.message.edit_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+    await callback.answer()
+
+@router.callback_query(lambda c: c.data.startswith("buy_wallet_"))
+async def buy_wallet_handler(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    index = int(callback.data.split("_")[2])
+
+    name = list(e_wallets.keys())[index]
+    data = e_wallets[name]
+    price = data["price"]
+
+    balance = await get_balance(user_id)
+
+    if data["stock"] <= 0:
+        await callback.message.edit_text("❌ Товар закончился.")
+        await callback.answer()
+        return
+
+    if balance < price:
+        await callback.message.edit_text(
+            (
+                f"⚠️ *Недостаточно средств!*\n\n"
+                f"💰 Баланс: *{balance}$*\n"
+                f"💵 Цена: *{price}$*"
+            ),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💳 Пополнить баланс", callback_data="topup")],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"wallet_info_{index+1}")]
+            ])
+        )
+        await callback.answer()
+        return
+
+    await update_balance(user_id, -float(price))
+    e_wallets[name]["stock"] -= 1
+
+    new_balance = await get_balance(user_id)
+
+    await callback.message.edit_text(
+        (
+            f"✅ *Покупка успешна!*\n\n"
+            f"💳 Кошелёк: *Stripe*\n"
+            f"💵 Цена: *{price}$*\n"
+            f"💰 Баланс: *{new_balance}$*\n\n"
+            "Данные будут выданы в ближайшее время."
+        ),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 В меню", callback_data="main_menu")]
+        ])
+    )
+    await callback.answer()
+
 
 # ---------- Категория: ЛК банков ----------
 @router.callback_query(lambda c: c.data == "bank_accounts")
