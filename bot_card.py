@@ -51,7 +51,7 @@ avito_accounts = {
 
 e_wallets = {
     "💳 Stripe": {
-        "price": 10,
+        "price": 10.34,
         "stock": 334
     }
 }
@@ -92,6 +92,14 @@ CREATE TABLE IF NOT EXISTS stripe_accounts (
     is_sold INTEGER DEFAULT 0
 )
 """)
+
+
+async def notify_admin(text: str):
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, text, parse_mode="Markdown")
+        except:
+            pass
 
 
 async def add_stripe_account(data: str):
@@ -295,7 +303,19 @@ def main_menu(user_id: int | None = None):
 # ---------- /start ----------
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
+    user_id = message.from_user.id
+
+    # уведомляем ТОЛЬКО если это не админ
+    if user_id not in ADMIN_IDS:
+        await notify_admin(
+            "👤 *Новый пользователь нажал /start*\n\n"
+            f"🆔 ID: `{user_id}`\n"
+            f"👤 Имя: {message.from_user.first_name or '—'}\n"
+            f"🔗 @{message.from_user.username or '—'}"
+        )
+
     await show_start(message, edit=False)
+
 
 
 
@@ -892,6 +912,14 @@ async def process_topup_amount(message: types.Message, state: FSMContext):
     except Exception as e:
         await message.answer(f"⚠️ Ошибка при создании платежа: {e}")
         return
+    
+    await notify_admin(
+    "💳 *Пользователь дошёл до оплаты (CryptoBot)*\n\n"
+    f"👤 ID: `{user_id}`\n"
+    f"💰 Сумма: *{amount:.2f} USDT*\n"
+    f"🧾 Invoice ID: `{invoice.invoice_id}`"
+)
+
 
     pay_url = invoice.bot_invoice_url
     kb = InlineKeyboardBuilder()
@@ -923,6 +951,13 @@ async def process_card_topup(message: types.Message, state: FSMContext):
 
     usd_amount = rub_amount / RUB_TO_USD_RATE
 
+    # 🔔 Уведомление админу — ТУТ
+    await notify_admin(
+        "🏦 *Пользователь дошёл до оплаты (карта РФ)*\n\n"
+        f"👤 ID: `{message.from_user.id}`\n"
+        f"💰 Сумма: *{rub_amount:.0f} ₽* (~{usd_amount:.2f}$)"
+    )
+
     text = (
         f"💳 Пополнение через карту РФ\n\n"
         f"💰 Сумма: {rub_amount:.2f}₽\n"
@@ -938,6 +973,7 @@ async def process_card_topup(message: types.Message, state: FSMContext):
 
     await message.answer(text, reply_markup=kb.as_markup())
     await state.clear()
+
 
 
 
